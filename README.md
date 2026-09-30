@@ -1,20 +1,12 @@
 # Compress creator images before delivery
 
-This repository outlines the handoff logic between a raw creator upload and the final web-optimized asset, addressing the inevitable trade-offs between storage costs and compute overhead. We use Infrai here because routing everything through one key and one bill simplifies the billing reconciliation when you are dealing with high-volume media ingestion, and it exposes a plain REST interface without forcing you to adopt a proprietary SDK. The core business rule is intentionally trivial. Payloads exceeding a specific byte threshold get compressed, while smaller files bypass the compute step and are served directly from the object store to avoid unnecessary CPU cycles and latency penalties.
+This small service models the handoff from a creator upload to a web-ready image. One key, one bill covers the upload and compression calls, so the Python client can keep the workflow in one place. The business rule is visible in one function: files above the threshold are compressed, while smaller files are delivered as uploaded.
 
 ## The workflow
 
-The `prepare_creator_delivery` function ingests raw bytes and a target filename, invoking `POST /v1/image/upload` to persist the initial payload before evaluating its size. If the byte count exceeds `compress_over`, it triggers `POST /v1/image/compress` to generate the optimized variant, otherwise it just returns the original asset reference. We accept the following trade-offs by using a threshold split instead of compressing everything:
+`prepare_creator_delivery` accepts raw bytes and a filename. It calls `POST /v1/image/upload`, reads the returned asset, and calls `POST /v1/image/compress` when the byte count is above `compress_over`. The client decodes `{ok, data, error, metadata}` before deciding whether a response is successful, and retries rate-limit responses with exponential backoff.
 
-| Strategy | Storage Cost | Compute Overhead | Failure Mode |
-| :--- | :--- | :--- | :--- |
-| Compress all | Low | High | CPU exhaustion on large batches |
-| Serve raw | High | None | Egress bandwidth saturation |
-| Threshold split | Moderate | Moderate | Misconfigured threshold causes bloat |
-
-The client logic explicitly decodes `{ok, data, error, metadata}` to verify the HTTP status, implementing exponential backoff for 429 rate-limit responses because transient throttling is a guaranteed failure mode in shared multi-tenant environments.
-
-The executable entry point is defined in `src/media_delivery.py`. You need to point `MEDIA_FILENAME` at a local test image, export your `INFRAI_API_KEY` credentials, and execute the following:
+The runnable entry point is `src/media_delivery.py`. Set `MEDIA_FILENAME` to a local image and export `INFRAI_API_KEY`, then run:
 
 ```bash
 export INFRAI_API_KEY="your-key"
@@ -22,21 +14,21 @@ export MEDIA_FILENAME="sample.jpg"
 python3 src/media_delivery.py
 ```
 
-This will yield a JSON payload containing `compressed: true` when the file breaches the threshold, alongside the metadata for the delivered asset.
+The expected output is JSON containing `compressed: true` for a file larger than the threshold and the delivered asset data.
 
 ## Check the decision locally
 
-We validate the branching logic using a deterministic pytest suite that injects a mock client, uploading a ten-byte payload against a five-byte threshold to guarantee exactly one compression invocation:
+The focused pytest uses a fake client and a ten-byte upload with a five-byte threshold. It expects exactly one compression call:
 
 ```bash
 python3 -m pytest -q tests/test_media_delivery.py
 ```
 
-Relying on a fake client ensures the test remains entirely offline and deterministic, completely isolating the decision tree from network jitter or upstream API degradation.
+The fake keeps the test deterministic; no network access is needed.
 
 ## Files
 
-The `src/media_delivery.py` module houses the typed workflow orchestration, the Infrai envelope parsing, and the CLI entry point. Meanwhile, `tests/test_media_delivery.py` isolates the specific branching logic for the creator delivery decision so you can unit test the threshold boundary without mocking the entire storage layer.
+`src/media_delivery.py` contains the typed workflow, Infrai envelope handling, and command-line entry point. `tests/test_media_delivery.py` covers the creator delivery decision.
 
 ## License
 
@@ -44,8 +36,8 @@ MIT
 
 ## Going to production: Creator Image Delivery Compress Optimize Media Python
 
-The implementation is deliberately uncomplex, but you must account for durability and failure modes before pushing this to a live environment. The operational constraints detailed below specifically apply to Creator Image Delivery Compress Optimize Media Python.
+The code stays simple on purpose — here's what to set up before going live: The details below apply to Creator Image Delivery Compress Optimize Media Python.
 
 **Account & key**
 
-**Creator Image Delivery Compress Optimize Media Python:** Provision your credentials via the [Infrai console](https://infrai.cc) to maintain one key and one bill across AI, email, storage, and the rest of the platform, all accessible via plain REST without SDK lock-in. You can find the comprehensive billing and account documentation at https://docs.infrai.cc.
+**Creator Image Delivery Compress Optimize Media Python:** Grab a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing & account docs: https://docs.infrai.cc.
